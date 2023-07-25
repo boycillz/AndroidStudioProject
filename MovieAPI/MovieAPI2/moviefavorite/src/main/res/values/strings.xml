@@ -1,0 +1,76 @@
+.parentData is SectorChildListParentData);
+      context.paintChild(child, offset);
+      final SectorChildListParentData childParentData = child.parentData;
+      child = childParentData.nextSibling;
+    }
+  }
+
+}
+
+class RenderBoxToRenderSectorAdapter extends RenderBox with RenderObjectWithChildMixin<RenderSector> {
+
+  RenderBoxToRenderSectorAdapter({ double innerRadius = 0.0, RenderSector child })
+    : _innerRadius = innerRadius {
+    this.child = child;
+  }
+
+  double _innerRadius;
+  double get innerRadius => _innerRadius;
+  set innerRadius(double value) {
+    _innerRadius = value;
+    markNeedsLayout();
+  }
+
+  @override
+  void setupParentData(RenderObject child) {
+    if (child.parentData is! SectorParentData)
+      child.parentData = SectorParentData();
+  }
+
+  @override
+  double computeMinIntrinsicWidth(double height) {
+    if (child == null)
+      return 0.0;
+    return getIntrinsicDimensions(height: height).width;
+  }
+
+  @override
+  double computeMaxIntrinsicWidth(double height) {
+    if (child == null)
+      return 0.0;
+    return getIntrinsicDimensions(height: height).width;
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) {
+    if (child == null)
+      return 0.0;
+    return getIntrinsicDimensions(width: width).height;
+  }
+
+  @override
+  double computeMaxIntrinsicHeight(double width) {
+    if (child == null)
+      return 0.0;
+    return getIntrinsicDimensions(width: width).height;
+  }
+
+  Size getIntrinsicDimensions({
+    double width = double.infinity,
+    double height = double.infinity,
+  }) {
+    assert(child is RenderSector);
+    assert(child.parentData is SectorParentData);
+    assert(width != null);
+    assert(height != null);
+    if (!width.isFinite && !height.isFinite)
+      return Size.zero;
+    final double maxChildDeltaRadius = math.max(0.0, math.min(width, height) / 2.0 - innerRadius);
+    final SectorDimensions childDimensions = child.getIntrinsicDimensions(SectorConstraints(maxDeltaRadius: maxChildDeltaRadius), innerRadius);
+    final double dimension = (innerRadius + childDimensions.deltaRadius) * 2.0;
+    return Size.square(dimension);
+  }
+
+  @override
+  void performLayout() {
+    if (child == null || (!constraints.hasBoundedWidth && !constraints.
