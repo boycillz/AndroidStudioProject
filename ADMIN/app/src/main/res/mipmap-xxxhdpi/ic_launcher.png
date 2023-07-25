@@ -1,0 +1,255 @@
+e
+                // communication between dream manager service and power manager
+                // service.  They have no additive battery impact.
+                return -1;
+
+            default:
+                return -1;
+        }
+    }
+
+    /**
+     * Notifies that the device is changing wakefulness.
+     * This function may be called even if the previous change hasn't finished in
+     * which case it will assume that the state did not fully converge before the
+     * next transition began and will recover accordingly.
+     */
+    public void onWakefulnessChangeStarted(final int wakefulness, int reason) {
+        final boolean interactive = PowerManagerInternal.isInteractive(wakefulness);
+        if (DEBUG) {
+            Slog.d(TAG, "onWakefulnessChangeStarted: wakefulness=" + wakefulness
+                    + ", reason=" + reason + ", interactive=" + interactive);
+        }
+
+        // Tell the activity manager about changes in wakefulness, not just interactivity.
+        // It needs more granularity than other components.
+        mHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                mActivityManagerInternal.onWakefulnessChanged(wakefulness);
+            }
+        });
+
+        // Handle any early interactive state changes.
+        // Finish pending incomplete ones from a previous cycle.
+        if (mInteractive != interactive) {
+            // Finish up late behaviors if needed.
+            if (mInteractiveChanging) {
+                handleLateInteractiveChange();
+            }
+
+            // Start input as soon as we start waking up or going to sleep.
+            mInputManagerInternal.setInteractive(interactive);
+            mInputMethodManagerInternal.setInteractive(interactive);
+
+            // Notify battery stats.
+            try {
+                mBatteryStats.noteInteractive(interactive);
+            } catch (RemoteException ex) { }
+
+            // Handle early behaviors.
+            mInteractive = interactive;
+            mInteractiveChangeReason = reason;
+            mInteractiveChanging = true;
+            handleEarlyInteractiveChange();
+        }
+    }
+
+    /**
+     * Notifies that the device has finished changing wakefulness.
+     */
+    public void onWakefulnessChangeFinished() {
+        if (DEBUG) {
+            Slog.d(TAG, "onWakefulnessChangeFinished");
+        }
+
+        if (mInteractiveChanging) {
+            mInteractiveChanging = false;
+            handleLateInteractiveChange();
+        }
+    }
+
+    /**
+     * Handle early interactive state changes such as getting applications or the lock
+     * screen running and ready for the user to see (such as when turning on the screen).
+     */
+    private void handleEarlyInteractiveChange() {
+        synchronized (mLock) {
+            if (mInteractive) {
+                // Waking up...
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        EventLog.writeEvent(EventLogTags.POWER_SCREEN_STATE, 1, 0, 0, 0);
+                        mPolicy.startedWakingUp();
+                    }
+                });
+
+                // Send interactive broadcast.
+                mPendingInteractiveState = INTERACTIVE_STATE_AWAKE;
+                mPendingWakeUpBroadcast = true;
+                updatePendingBroadcastLocked();
+            } else {
+                // Going to sleep...
+                // Tell the policy that we started going to sleep.
+                final int why = translateOffReason(mInteractiveChangeReason);
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        mPolicy.startedGoingToSleep(why);
+                    }
+                });
+            }
+        }
+    }
+
+    /**
+     * Handle late interactive state changes once they are finished so that the system can
+     * finish pending transitions (such as turning the screen off) before causing
+     * applications to change state visibly.
+     */
+    private void handleLateInteractiveChange() {
+        synchronized (mLock) {
+            if (mInteractive) {
+                // Finished waking up...
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        mPolicy.finishedWakingUp();
+                    }
+                });
+            } else {
+                // Finished going to sleep...
+                // This is a good time to make transitions that we don't want the user to see,
+                // such as bringing the key guard to focus.  There's no guarantee for this
+                // however because the user could turn the device on again at any time.
+                // Some things may need to be protected by other mechanisms that defer screen on.
+
+                // Cancel pending user activity.
+                if (mUserActivityPending) {
+                    mUserActivityPending = false;
+                    mHandler.removeMessages(MSG_USER_ACTIVITY);
+                }
+
+                // Tell the policy we finished going to sleep.
+                final int why = translateOffReason(mInteractiveChangeReason);
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        EventLog.writeEvent(EventLogTags.POWER_SCREEN_STATE, 0, why, 0, 0);
+                        mPolicy.finishedGoingToSleep(why);
+                    }
+                });
+
+                // Send non-interactive broadcast.
+                mPendingInteractiveState = INTERACTIVE_STATE_ASLEEP;
+                mPendingGoToSleepBroadcast = true;
+                updatePendingBroadcastLocked();
+            }
+        }
+    }
+
+    private static int translateOffReason(int reason) {
+        switch (reason) {
+            case PowerManager.GO_TO_SLEEP_REASON_DEVICE_ADMIN:
+                return WindowManagerPolicy.OFF_BECAUSE_OF_ADMIN;
+            case PowerManager.GO_TO_SLEEP_REASON_TIMEOUT:
+                return WindowManagerPolicy.OFF_BECAUSE_OF_TIMEOUT;
+            default:
+                return WindowManagerPolicy.OFF_BECAUSE_OF_USER;
+        }
+    }
+
+    /**
+     * Called when screen brightness boost begins or ends.
+     */
+    public void onScreenBrightnessBoostChanged() {
+        if (DEBUG) {
+            Slog.d(TAG, "onScreenBrightnessBoostChanged");
+        }
+
+        mSuspendBlocker.acquire();
+        Message msg = mHandler.obtainMessage(MSG_SCREEN_BRIGHTNESS_BOOST_CHANGED);
+        msg.setAsynchronous(true);
+        mHandler.sendMessage(msg);
+    }
+
+    /**
+     * Called when there has been user activity.
+     */
+    public void onUserActivity(int event, int uid) {
+        if (DEBUG) {
+            Slog.d(TAG, "onUserActivity: event=" + event + ", uid=" + uid);
+        }
+
+        try {
+            mBatteryStats.noteUserActivity(uid, event);
+        } catch (RemoteException ex) {
+            // Ignore
+        }
+
+        synchronized (mLock) {
+            if (!mUserActivityPending) {
+                mUserActivityPending = true;
+                Message msg = mHandler.obtainMessage(MSG_USER_ACTIVITY);
+                msg.setAsynchronous(true);
+                mHandler.sendMessage(msg);
+            }
+        }
+    }
+
+    /**
+     * Called when the screen has turned on.
+     */
+    public void onWakeUp(String reason, int reasonUid, String opPackageName, int opUid) {
+        if (DEBUG) {
+            Slog.d(TAG, "onWakeUp: event=" + reason + ", reasonUid=" + reasonUid
+                    + " opPackageName=" + opPackageName + " opUid=" + opUid);
+        }
+
+        try {
+            mBatteryStats.noteWakeUp(reason, reasonUid);
+            if (opPackageName != null) {
+                mAppOps.noteOperation(AppOpsManager.OP_TURN_SCREEN_ON, opUid, opPackageName);
+            }
+        } catch (RemoteException ex) {
+            // Ignore
+        }
+
+    }
+
+    /**
+     * Called when wireless charging has started so as to provide user feedback.
+     */
+    public void onWirelessChargingStarted() {
+        if (DEBUG) {
+            Slog.d(TAG, "onWirelessChargingStarted");
+        }
+
+        mSuspendBlocker.acquire();
+        Message msg = mHandler.obtainMessage(MSG_WIRELESS_CHARGING_STARTED);
+        msg.setAsynchronous(true);
+        mHandler.sendMessage(msg);
+    }
+
+    private void updatePendingBroadcastLocked() {
+        if (!mBroadcastInProgress
+                && mPendingInteractiveState != INTERACTIVE_STATE_UNKNOWN
+                && (mPendingWakeUpBroadcast || mPendingGoToSleepBroadcast
+                        || mPendingInteractiveState != mBroadcastedInteractiveState)) {
+            mBroadcastInProgress = true;
+            mSuspendBlocker.acquire();
+            Message msg = mHandler.obtainMessage(MSG_BROADCAST);
+            msg.setAsynchronous(true);
+            mHandler.sendMessage(msg);
+        }
+    }
+
+    private void finishPendingBroadcastLocked() {
+        mBroadcastInProgress = false;
+        mSuspendBlocker.release();
+    }
+
+    private void sendUserActivity() {
+        synchronized (mLock) {
+       

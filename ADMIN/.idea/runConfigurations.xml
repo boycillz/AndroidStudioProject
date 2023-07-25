@@ -1,0 +1,15 @@
+  private void applyKeyguardFlags(State state) {
+        if (state.keyguardShowing) {
+            mLpChanged.privateFlags |= WindowManager.LayoutParams.PRIVATE_FLAG_KEYGUARD;
+        } else {
+            mLpChanged.privateFlags &= ~WindowManager.LayoutParams.PRIVATE_FLAG_KEYGUARD;
+        }
+
+        if (state.keyguardShowing && !state.backdropShowing) {
+            mLpChanged.flags |= WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
+        } else {
+            mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
+        }
+    }
+
+    private v
