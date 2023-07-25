@@ -1,0 +1,111 @@
+es static native method.
+        // Static non-natives are not overridden and thus do not get here.
+        final String debug = System.getenv("DEBUG_LAYOUT");
+        if (debug != null && !debug.equals("0") && !debug.equals("false")) {
+
+            OverrideMethod.setDefaultListener(new MethodAdapter() {
+                @Override
+                public void onInvokeV(String signature, boolean isNative, Object caller) {
+                    sDefaultLog.error(null, "Missing Stub: " + signature +
+                            (isNative ? " (native)" : ""), null /*data*/);
+
+                    if (debug.equalsIgnoreCase("throw")) {
+                        // Throwing this exception doesn't seem that useful. It breaks
+                        // the layout editor yet doesn't display anything meaningful to the
+                        // user. Having the error in the console is just as useful. We'll
+                        // throw it only if the environment variable is "throw" or "THROW".
+                        throw new StaticMethodNotImplementedException(signature);
+                    }
+                }
+            });
+        }
+
+        // load the fonts.
+        FontFamily_Delegate.setFontLocation(fontLocation.getAbsolutePath());
+        MemoryMappedFile_Delegate.setDataDir(fontLocation.getAbsoluteFile().getParentFile());
+
+        // now parse com.android.internal.R (and only this one as android.R is a subset of
+        // the internal version), and put the content in the maps.
+        try {
+            Class<?> r = com.android.internal.R.class;
+
+            for (Class<?> inner : r.getDeclaredClasses()) {
+                String resTypeName = inner.getSimpleName();
+                ResourceType resType = ResourceType.getEnum(resTypeName);
+                if (resType != null) {
+                    Map<String, Integer> fullMap = new HashMap<String, Integer>();
+                    sRevRMap.put(resType, fullMap);
+
+                    for (Field f : inner.getDeclaredFields()) {
+                        // only process static final fields. Since the final attribute may have
+                        // been altered by layoutlib_create, we only check static
+                        int modifiers = f.getModifiers();
+                        if (Modifier.isStatic(modifiers)) {
+                            Class<?> type = f.getType();
+                            if (type.isArray() && type.getComponentType() == int.class) {
+                                // if the object is an int[] we put it in sRArrayMap using an IntArray
+                                // wrapper that properly implements equals and hashcode for the array
+                                // objects, as required by the map contract.
+                                sRArrayMap.put(new IntArray((int[]) f.get(null)), f.getName());
+                            } else if (type == int.class) {
+                                Integer value = (Integer) f.get(null);
+                                sRMap.put(value, Pair.of(resType, f.getName()));
+                                fullMap.put(f.getName(), value);
+                            } else {
+                                assert false;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable throwable) {
+            if (log != null) {
+                log.error(LayoutLog.TAG_BROKEN,
+                        "Failed to load com.android.internal.R from the layout library jar",
+                        throwable, null);
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    @Override
+    public boolean dispose() {
+        BridgeAssetManager.clearSystem();
+
+        // dispose of the default typeface.
+        Typeface_Delegate.resetDefaults();
+
+        return true;
+    }
+
+    /**
+     * Starts a layout session by inflating and rendering it. The method returns a
+     * {@link RenderSession} on which further actions can be taken.
+     *
+     * @param params the {@link SessionParams} object with all the information necessary to create
+     *           the scene.
+     * @return a new {@link RenderSession} object that contains the result of the layout.
+     * @since 5
+     */
+    @Override
+    public RenderSession createSession(SessionParams params) {
+        try {
+            Result lastResult = SUCCESS.createResult();
+            RenderSessionImpl scene = new RenderSessionImpl(params);
+            try {
+                prepareThread();
+                lastResult = scene.init(params.getTimeout());
+                if (lastResult.isSuccess()) {
+                    lastResult = scene.inflate();
+                    if (lastResult.isSuccess()) {
+                        lastResult = scene.render(true /*freshRender*/);
+                    }
+                }
+            } finally {
+                scene.release();
+                cleanupThread();
+            }
+
+          

@@ -1,0 +1,17 @@
+oes not contain the given column.
+     */
+    public static String getColumnString(Cursor cursor, String columnName) {
+        int col = cursor.getColumnIndex(columnName);
+        return getStringOrNull(cursor, col);
+    }
+
+    private static String getStringOrNull(Cursor cursor, int col) {
+        if (col == INVALID_INDEX) {
+            return null;
+        }
+        try {
+            return cursor.getString(col);
+        } catch (Exception e) {
+            Log.e(LOG_TAG,
+                    "unexpected error retrieving valid column from cursor, "
+                    
